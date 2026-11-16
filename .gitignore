@@ -1,0 +1,37 @@
+# 浏览器配置、调试产物和本机凭证不进入版本管理。
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Environment and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Personal data and databases
+*.db
+*.sqlite
+*.sqlite3
+uploads/
+resumes/
+data/private/
+
+# Browser data
+.chrome-profile/
+playwright-report/
+test-results/
+
+# Frontend
+node_modules/
+dist/
+
+# IDE and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
