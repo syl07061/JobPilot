@@ -44,6 +44,7 @@ class DirectSearchService:
         if detail_matches(detail, job.fields.get('url')):
             # 列表可能带“-出差”等后缀，不用标题完全相同作为硬条件。
             job.fields.update(jd=detail['jd'], jd_status='captured', jd_tags=detail.get('tags', []), jd_error=None, jd_error_code=None)
+            job.fields['work_address'] = detail.get('work_address')
             job.fields.update(detail_title=detail.get('title'),
                 jd_title_differs=bool(detail.get('title') and job.fields.get('title') and detail['title'] != job.fields['title']),
                 jd_identity={'method': 'detail_url_and_active_card' if 'active_job_urls' in detail else 'detail_url',
@@ -155,15 +156,19 @@ class DirectSearchService:
             if task.state == 'completed':
                 task.phase = 'completed'
             self.tasks[task_id] = task
-        return self.tasks[task_id].model_copy(deep=True)
+        result = self.tasks[task_id].model_copy(deep=True)
+        for job in result.jobs:
+            job.fields.setdefault('work_address', None)  # 兼容旧任务，不猜地址、不改原始快照。
+        return result
 
     async def create(self, request: DirectSearchRequest) -> DirectSearchTask:
         async with self.lock:
             if any(t.state != "completed" for t in self.tasks.values()):
                 raise CollectorError("busy", "已有 JobPilot 读取任务，请先等待结束或停止。")
             now = datetime.now(timezone.utc)
+            groups=request.filters.group_count if request.filters else 1
             task = DirectSearchTask(id=str(uuid4()), request=request, created_at=now, updated_at=now,
-                                    counts={"pages_requested": request.max_pages, "pages_read": 0,
+                                    counts={"pages_requested": request.max_pages*groups, "pages_read": 0,'groups_total':groups,
                                             "unique_jobs": 0, "duplicate_observations": 0})
             self.tasks[task.id], self.stops[task.id] = task, asyncio.Event()
             self.save(task)
@@ -174,6 +179,20 @@ class DirectSearchService:
         known: set[str] = set()
 
         async def on_page(page: dict):
+            if page.get('phase')=='group_result':
+                task.search_groups.append(scrub(page))
+                task.counts['groups_total']=page.get('group_count',1)
+                task.counts['groups_finished']=len(task.search_groups)
+                self.save(task)
+                return
+            if page.get('phase')=='filters':
+                task.phase='filters'
+                task.applied_filters=scrub(page['filter_application'])
+                total=page.get('group_count',1)
+                task.counts.update(groups_total=total,group_index=page.get('group_index',1),pages_requested=total*task.request.max_pages)
+                task.message='本组BOSS原生条件已核对，开始读取岗位。' if task.applied_filters.get('verified') else '正在应用本组原生筛选条件，尚未读取本组岗位。'
+                self.save(task)
+                return
             if page.get('phase') == 'details':
                 self.record_detail(task, page)
                 return
@@ -191,12 +210,14 @@ class DirectSearchService:
                 fields = {key: card.get("observed_fields", {}).get(key) for key in
                           ("title", "company", "salary", "location", "experience", "education", "tags", "url")}
                 fields.update({key: None for key in ("city", "district", "company_size", "company_industry",
-                                                    "hr_name", "hr_title", "hr_active", "jd", "responsibilities", "requirements")})
+                                                    "hr_name", "hr_title", "hr_active", "jd", "responsibilities", "requirements", "work_address")})
                 fields["list_text"] = card.get("raw", {}).get("card_text")
                 fields['jd_status'] = 'not_captured'
+                fields['search_group']=page.get('group_index',1)
                 raw = RawSnapshot(source_layer="search_list_dom", source="JobPilot / BOSS visible DOM",
                     endpoint="DOM:" + safe_page["url"], captured_at=captured,
-                    payload={"batch": page["batch"], "card": card["raw"], "observed_fields": card.get("observed_fields", {})},
+                    payload={"batch": page["batch"], "card": card["raw"], "observed_fields": card.get("observed_fields", {}),
+                             'group_index':page.get('group_index',1),'group_batch':page.get('group_batch',page['batch'])},
                     redactions=changes,
                     note="JobPilot 独立读取的搜索列表 DOM 原文，不是 BOSS 网络原始 JSON；这里的薪资仍为原值，展示字段可按已验证字体另行还原。JD 来源单独保存在 detail_raw。")
                 job = JobView(id=hashlib.sha256(card["url"].encode()).hexdigest()[:24], fields=fields, raw=raw)
@@ -210,7 +231,8 @@ class DirectSearchService:
             task.message = f"已读取{page['batch']}页/批次，{len(task.jobs)}个本次唯一岗位。"
             self.save(task)
 
-        await self.execute(task, self.adapter.collect(task.request.max_pages, self.stops[task.id], on_page))
+        args={} if task.request.filters is None else {'filters':task.request.filters.model_dump()}
+        await self.execute(task, self.adapter.collect(task.request.max_pages, self.stops[task.id], on_page,**args))
 
     async def execute(self, task: DirectSearchTask, operation):
         try:
@@ -221,8 +243,11 @@ class DirectSearchService:
             raise
         except CollectorError as exc:
             task.outcome = exc.code if exc.code in {"load_failed", "quota_exhausted", "platform_restricted", "page_changed", "stopped"} else "collector_error"
+            if exc.code=='page_not_visible':task.outcome='load_failed'
             if exc.code in {"source_unavailable", "no_search_tab", "ambiguous_tab"}:
                 task.outcome = "source_unavailable"
+            if exc.code in {'filter_not_applied','unsupported_filter','filter_controls_unavailable'}:
+                task.outcome='filter_failed'
             task.reason_code, task.message = exc.code, str(exc)
         except Exception:
             task.outcome, task.reason_code, task.message = "collector_error", "unexpected_error", "独立读取发生异常，已停止；没有自动重试或切换页面。"

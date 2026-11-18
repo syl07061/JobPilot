@@ -144,7 +144,7 @@ def test_endpoint_accepts_only_pages(tmp_path):
                 task_id = response.json()['id']
                 await service.workers[task_id]
                 data = (await client.get('/search/tasks/'+task_id)).json()
-                assert data['outcome'] == 'collected' and data['request'] == {'max_pages':1}
+                assert data['outcome'] == 'collected' and data['request'] == {'max_pages':1,'filters':None}
                 assert 'native_task_id' not in data
         finally: app.dependency_overrides.clear()
     asyncio.run(scenario())
@@ -318,6 +318,42 @@ def test_same_url_and_active_card_allow_different_list_and_detail_titles(tmp_pat
 @pytest.mark.parametrize('active', [[], ['wrong'], ['same','wrong']])
 def test_ambiguous_or_other_active_card_rejects_jd(active):
     assert not detail_matches({'url':'same','title':'Same title','jd':'JD','active_job_urls':active}, 'same')
+
+
+@pytest.mark.parametrize('address', ['上海浦东新区金创大厦1号楼五楼', None])
+def test_work_address_is_from_same_detail_and_has_no_extra_budget_cost(tmp_path, address):
+    async def scenario():
+        value=page('a')
+        value['detail']={'url':value['cards'][0]['url'], 'title':'a', 'jd':'职位描述原文',
+            'work_address':address, 'work_address_region_text':address,
+            'active_job_urls':[value['cards'][0]['url']]}
+        service, connection=make_service(tmp_path,[value])
+        task=await service.create(DirectSearchRequest(max_pages=1))
+        await service.workers[task.id]
+        result=await service.get(task.id)
+        assert result.jobs[0].fields['work_address']==address
+        assert result.jobs[0].detail_raw.payload['work_address']==address
+        assert result.jobs[0].raw.payload['observed_fields'].get('work_address') is None
+        assert connection.selections==[]
+        assert json.loads((tmp_path/'budget/daily_batches.json').read_text())['count']==1
+        persisted=await DirectSearchService(service.adapter,service.root).get(task.id)
+        assert persisted.jobs[0].fields['work_address']==address
+    asyncio.run(scenario())
+
+
+def test_other_job_address_does_not_replace_existing_address(tmp_path):
+    async def scenario():
+        value=page('a')
+        value['detail']={'url':value['cards'][0]['url'],'title':'a','jd':'JD','work_address':'正确地址'}
+        service, connection=make_service(tmp_path,[value])
+        task=await service.create(DirectSearchRequest(max_pages=1))
+        await service.workers[task.id]
+        connection.snapshots=[page('a',detail={'url':'https://www.zhipin.com/job_detail/other.html',
+            'title':'a','jd':'JD','work_address':'其他岗位地址'})]
+        with pytest.raises(CollectorError):
+            await service.refresh_current(task.id,service.tasks[task.id].jobs[0].id)
+        assert (await service.get(task.id)).jobs[0].fields['work_address']=='正确地址'
+    asyncio.run(scenario())
 
 
 def test_stale_detail_stops_after_one_click_without_wrong_assignment(tmp_path):

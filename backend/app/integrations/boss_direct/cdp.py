@@ -10,6 +10,11 @@ from websockets.asyncio.client import connect
 from app.integrations.collector import CollectorError
 
 DETAIL_TARGET_JS = Path(__file__).with_name('detail_target.js').read_text(encoding='utf-8')
+PAINT_READY_JS = """(async()=>{
+if(document.visibilityState!=='visible')return {visible:false};
+await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+return {visible:document.visibilityState==='visible',has_focus:document.hasFocus()};
+})()"""
 
 
 def search_target(target: dict) -> bool:
@@ -105,13 +110,27 @@ class PageCDP:
             raise CollectorError("dom_error", "当前页面未返回可识别的 DOM 结果。")
         return value
 
+    async def wait_for_paint(self):
+        """等待真实前台页面绘制；不模拟可见性、焦点或网站事件。"""
+        result=await self.call('Runtime.evaluate',{'expression':PAINT_READY_JS,'returnByValue':True,
+                                                  'awaitPromise':True,'timeout':3000})
+        value=result.get('result',{}).get('value',{})
+        if result.get('exceptionDetails') or not value.get('visible'):
+            raise CollectorError('page_not_visible','BOSS标签页未处于可绘制的前台状态，未点击岗位。请保持专用Chrome前台且不要最小化。')
+        return value
+
     async def select_job(self, job: dict, context: dict):
         """正常滚动并单击列表卡片空白处，不操作任何沟通/投递控件。"""
         payload = {'url': job['url'], 'title': job['title'], 'context': context}
+        # 后台刚导航的Chrome可能接收协议命令但不投递DOM点击。
+        # 正常激活真实标签页，等待绘制后再定位，不用焦点/可见性仿真。
+        await self.call('Page.bringToFront')
+        await self.wait_for_paint()
         result = await self.evaluate(DETAIL_TARGET_JS + '(' + json.dumps({**payload, 'scroll': True}) + ')')
         if result.get('status') != 'scrolled':
             raise CollectorError('page_changed' if result.get('status') == 'page_changed' else 'detail_not_found',
                                  '岗位卡片已变化或未找到，已停止自动详情读取；没有点击其他元素。')
+        paint=await self.wait_for_paint()  # 滚动布局与浏览器实际命中位置同步后再计算坐标。
         result = await self.evaluate(DETAIL_TARGET_JS + '(' + json.dumps({**payload, 'scroll': False}) + ')')
         if result.get('status') != 'ready':
             raise CollectorError('page_changed' if result.get('status') == 'page_changed' else 'detail_not_found',
@@ -119,3 +138,5 @@ class PageCDP:
         point = {'x': result['x'], 'y': result['y'], 'button': 'left', 'clickCount': 1}
         await self.call('Input.dispatchMouseEvent', {**point, 'type': 'mousePressed', 'buttons': 1})
         await self.call('Input.dispatchMouseEvent', {**point, 'type': 'mouseReleased', 'buttons': 0})
+        return {'target_url':job['url'],'activation':'Page.bringToFront','visible_before_click':paint['visible'],
+                'has_focus':paint.get('has_focus'),'point':{'x':result['x'],'y':result['y']},'hit':result.get('hit')}

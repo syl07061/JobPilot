@@ -1,7 +1,7 @@
 import json
 from functools import lru_cache
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.core.config import PROJECT_ROOT, get_settings
 from app.integrations.boss_direct.collector import DirectBossCollector
@@ -46,6 +46,14 @@ async def collector_status(service: DirectSearchService = Depends(get_service)):
         return await service.adapter.status()
     except CollectorError as exc:
         return {"available": False, "code": exc.code, "message": str(exc)}
+
+
+@router.get('/filter-options')
+async def filter_options(refresh: bool=False, city: str | None=Query(default=None,pattern=r'^\d{9}$'), service: DirectSearchService=Depends(get_service)):
+    try:
+        return await service.adapter.filter_options(refresh,city)
+    except CollectorError as exc:
+        raise HTTPException(409 if exc.code=='busy' else 503,str(exc)) from exc
 
 
 @router.get("/preview")

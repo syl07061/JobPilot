@@ -37,7 +37,10 @@ class BrowserCollectorAdapter(ABC):
 
     @abstractmethod
     async def collect(self, max_pages: int, stop: Event,
-                      on_page: Callable[[dict], Awaitable[None]]) -> dict: ...
+                      on_page: Callable[[dict], Awaitable[None]], *, filters: dict | None = None) -> dict: ...
+
+    async def filter_options(self, refresh: bool = False, city: str | None = None) -> dict:
+        raise CollectorError('unsupported', '当前采集适配器不支持原生筛选。')
 
     async def read_current(self, context: dict | None = None) -> dict:
         raise CollectorError('unsupported', '当前采集适配器不支持读取已打开的详情面板。')

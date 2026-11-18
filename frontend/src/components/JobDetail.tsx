@@ -2,7 +2,7 @@ import { useState } from 'react'
 import type { JobView } from '../types/search'
 
 const labels: [string, string][] = [
-  ['title', '岗位名称'], ['company', '公司'], ['location', '列表地点原文'], ['city', '城市字段'],
+  ['title', '岗位名称'], ['company', '公司'], ['location', '列表地点原文'], ['work_address', '详细工作地址'], ['city', '城市字段'],
   ['salary', '薪资范围'], ['experience', '经验'], ['education', '学历'],
   ['tags', '列表标签原文'],
 ]

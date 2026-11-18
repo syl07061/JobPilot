@@ -1,19 +1,25 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import { collectorStatus, getPreview, getTask, startSearch, stopSearch, refreshCurrent, readJobDetail, startAutoDetails, getBudget, setDailyLimit } from '../api/search'
+import { collectorStatus, getPreview, getTask, startSearch, stopSearch, refreshCurrent, readJobDetail, startAutoDetails, getBudget, setDailyLimit, getFilterOptions } from '../api/search'
 import JobDetail from '../components/JobDetail'
-import type { CollectorStatus, Preview, SearchTask, ReadingBudget } from '../types/search'
+import FilterChoices from '../components/FilterChoices'
+import type { CollectorStatus, Preview, SearchTask, ReadingBudget, FilterOptions, NativeFilters } from '../types/search'
 
 const outcomes: Record<string, string> = {
   collected: '列表与 JD 读取完成', no_results: '搜索页明确无结果', exhausted: '网站明确没有更多岗位',
   load_failed: '页面加载或读取失败', quota_exhausted: 'JobPilot 今日读取额度耗尽', page_changed: '页面或搜索条件变化，已停止',
   platform_restricted: '平台验证码或访问限制', collector_error: '采集器异常', source_unavailable: '采集服务未就绪',
   unknown: '结果无法确认', stopped: '已停止',
+  filter_failed: '未能确认BOSS原生筛选，未读取岗位',
 }
 const states: Record<string, string> = { running: '读取中', stopping: '停止中', completed: '已结束' }
 
 export default function HomePage() {
   const [pages, setPages] = useState(1)
+  const [filterOptions, setFilterOptions] = useState<FilterOptions | null>(null)
+  const [filters, setFilters] = useState<NativeFilters>({city:'',job_type:['0'],salary:['0'],experience:['0'],regions:[]})
+  const filterLoad = useRef(0)
+  const [loadingFilters, setLoadingFilters] = useState(false)
   const [status, setStatus] = useState<CollectorStatus | null>(null)
   const [task, setTask] = useState<SearchTask | null>(null)
   const [preview, setPreview] = useState<Preview | null>(null)
@@ -65,8 +71,26 @@ export default function HomePage() {
     catch (err) { setError(err instanceof Error ? err.message : '后端连接失败') }
   }
 
+  async function refreshFilters(refresh=false, city?:string) {
+    const sequence=++filterLoad.current
+    setLoadingFilters(true)
+    try {
+      const value=await getFilterOptions(refresh,city)
+      if(sequence!==filterLoad.current)return
+      setFilterOptions(value)
+      setFilters(previous=>({...previous,city:value.cities.some(c=>c.value===previous.city) ? previous.city :
+        value.cities.find(c=>c.label===value.current.city)?.value || value.cities[0]?.value || ''}))
+    } catch(err) {if(sequence===filterLoad.current)setError(err instanceof Error ? err.message : '无法读取BOSS筛选选项')}
+    finally {if(sequence===filterLoad.current)setLoadingFilters(false)}
+  }
+
+  useEffect(()=>{
+    if(filters.city && filterOptions?.region_city!==filters.city)void refreshFilters(false,filters.city)
+  },[filters.city])
+
   useEffect(() => {
     void refreshStatus()
+    void refreshFilters()
     void refreshBudget().then(value => setDailyLimitDraft(value.daily_limit)).catch(() => {})
     const id = localStorage.getItem('jobpilot-direct-task-v1')
     if (id) void getTask(id).then(setTask).catch(() => localStorage.removeItem('jobpilot-direct-task-v1'))
@@ -95,6 +119,9 @@ export default function HomePage() {
 
   const busy = submitting || enriching || savingLimit || (!!task && task.state !== 'completed')
   const quotaBlocked = budgetLoading || !budget || budget.exhausted
+  const groupCount=filters.job_type.length*filters.salary.length
+  const plannedBatches=pages*groupCount
+  const regionsReady=filterOptions?.region_city===filters.city
   const jobs = mode === 'preview' ? preview?.jobs || [] : task?.jobs || []
   const current = jobs.find(job => job.id === selected) || jobs[0]
 
@@ -103,7 +130,9 @@ export default function HomePage() {
     setSubmitting(true); setError(''); setMode('task'); setSelected(null)
     try {
       await requireBudget()
-      const value = await startSearch({ max_pages: pages })
+      if(!filterOptions || !filters.city || !regionsReady) throw new Error('请先读取当前城市的BOSS筛选和区域选项。')
+      if(plannedBatches>20)throw new Error('每组批次×组合数不能超过20批，请缩小本次范围。')
+      const value = await startSearch({ max_pages: pages, filters })
       setTask(value)
       localStorage.setItem('jobpilot-direct-task-v1', value.id)
     } catch (err) { setError(err instanceof Error ? err.message : '启动失败，请检查专用 Chrome。') }
@@ -139,7 +168,7 @@ export default function HomePage() {
 
   return <main>
     <header><p className="eyebrow">JobPilot · 独立读取</p><h1>BOSS 岗位原始信息</h1>
-      <p>先在专用 Chrome 手动登录、选择关键词和城市，打开搜索结果。开始后先读取列表，再自动逐个打开岗位面板获取 JD。</p></header>
+      <p>先在专用 Chrome 手动登录并搜索关键词。JobPilot按城市、行政区、求职类型、薪资和经验初筛，再读取岗位和 JD。</p></header>
     <section className="panel" aria-label="读取额度">
       <h2>每日读取额度</h2>
       {budget ? <p role="status">今日上限 {budget.daily_limit} 次 · 已用 {budget.used} 次 · <strong>剩余 {budget.remaining} 次</strong></p> : <p>{budgetLoading ? '正在读取今日额度…' : '剩余额度尚未确认，暂不能开始读取。'}</p>}
@@ -155,22 +184,35 @@ export default function HomePage() {
       {budgetNotice && <p role="status">{budgetNotice}</p>}
     </section>
     <section className="panel">
-      <form onSubmit={event => void submit(event)} className="search-form">
-        <label>读取几页 / 批次<input type="number" required min={1} max={20} value={pages} disabled={busy} onChange={e => setPages(Number(e.target.value))} /></label>
-        <button className="primary" disabled={busy || quotaBlocked || !status?.available}>开始读取</button>
+      <form onSubmit={event => void submit(event)} className="filter-form">
+        <label>工作城市<select aria-label="工作城市" required value={filters.city} disabled={busy} onChange={e=>setFilters({...filters,city:e.target.value,regions:[]})}>
+          <option value="">请选择城市</option>{filterOptions?.cities.map(c=><option key={c.value} value={c.value}>{c.label}</option>)}</select></label>
+        <label>每组读取几页 / 批次<input type="number" required min={1} max={20} value={pages} disabled={busy} onChange={e => setPages(Number(e.target.value))} /></label>
+        <button className="primary" disabled={busy || quotaBlocked || loadingFilters || !regionsReady || plannedBatches>20 || !status?.available}>开始读取</button>
+        <FilterChoices label="工作区域" regions options={regionsReady ? filterOptions?.regions || [] : []} value={filters.regions} disabled={busy || loadingFilters || !regionsReady} onChange={regions=>setFilters({...filters,regions})}/>
+        {([['job_type','求职类型'],['salary','薪资待遇'],['experience','工作经验']] as const).map(([key,label])=><FilterChoices key={key} label={label} value={filters[key]} options={filterOptions?.[key] || []} disabled={busy || loadingFilters || !filterOptions} onChange={value=>setFilters({...filters,[key]:value})}/>)}
       </form>
-      <p className="note">当前已加载的岗位算第1批。列表结束后低频自动读取本次岗位的 JD，无需手动逐个点开。遇访问限制、加载失败或额度耗尽会停止，保留已取得的数据。</p>
+      <button type="button" className="link-button" disabled={busy || loadingFilters} onClick={()=>void refreshFilters(true,filters.city || undefined)}>{loadingFilters ? '正在读取选项…' : '刷新BOSS筛选选项'}</button>
+      <p className="notice">本次 {groupCount} 组检索 × 每组 {pages} 批，列表最多读取 {plannedBatches} 次；另计需要打开的 JD。{budget && `今日剩余 ${budget.remaining} 次。`}{plannedBatches>20 ? '超过单任务20批，请缩小范围。' : '额度不足时保留部分结果并停止。'}</p>
+      <p className="note">同一条件内任一满足，不同条件同时满足。“经验不限”是平台的一种经验要求，与不筛选的“不限”不同。经验和行政区使用原生多选；求职类型、薪资原生只能单选，JobPilot拆成组合依次检索，结果按岗位链接合并去重。</p>
+      <p className="note">每组先提交条件，核对BOSS实际选中项后再读列表与JD。保留当前公开关键词，清除其他旧条件（包括商圈、地铁）。每组搜索加载与首批读取合计一次额度；遇限制或加载失败停止全部组合，不自动重试。</p>
       <p role="status">{status?.message || '正在检查本机 Chrome…'}
         <button type="button" className="link-button" onClick={() => void refreshStatus()}>检查当前搜索页</button></p>
       {status?.source_page && <p className="note">已找到：{status.source_page.title} · {status.source_page.url}</p>}
+      <p className="notice">自动读取JD时会将专用Chrome的BOSS标签页切到前台，并等待页面绘制。请勿切换该窗口的标签或最小化；可在另一个浏览器窗口查看JobPilot进度。</p>
       <p className="note">首次建议1页；任务期间请勿操作该结果页，也请停止其他程序对同一 Chrome 的控制。遇登录或安全验证立即停止，不绕过。</p>
     </section>
     {error && <p role="alert" className="error">{error}</p>}
     {task && <section className="panel" aria-label="当前任务">
       <h2>{states[task.state]}{task.state === 'running' && task.phase === 'details' ? ' · 正在自动获取 JD' : ''}{task.outcome ? ` · ${task.outcome === 'collected' && (task.counts.jd_captured || 0) < task.jobs.length ? '列表读取完成，JD待补齐' : task.outcome === 'load_failed' && task.counts.detail_total ? 'JD 加载或匹配失败' : outcomes[task.outcome] || task.outcome}` : ''}</h2>
-      <p>{task.message}</p><p className="note">本次请求：{task.request.max_pages}页/批次 · {task.source_page?.title || '等待读取页面'}</p>
+      <p>{task.message}</p><p className="note">本次请求：每组{task.request.max_pages}页/批次 · {task.source_page?.title || '等待读取页面'}</p>
+      {task.applied_filters && <div className="notice"><strong>{task.applied_filters.verified ? 'BOSS筛选已核对' : '正在应用BOSS筛选，尚未确认生效'}</strong>
+        <p>{Object.values(task.applied_filters.requested).map(o=>o.label).join(' · ')}</p>
+        {task.applied_filters.active_group && <p>当前第{task.applied_filters.group_index}/{task.applied_filters.group_count}组：{Object.values(task.applied_filters.active_group).map(o=>o.label).join(' · ')}</p>}
+        {task.applied_filters.effective && <p>页面回显：{Object.values(task.applied_filters.effective).join(' · ')}</p>}</div>}
       {task.state === 'completed' && task.outcome === 'quota_exhausted' && budget && !budget.exhausted && <p className="note">当前额度已有剩余；上方是该任务之前的停止原因。保存设置不会自动恢复任务，可手动点击“自动补齐本次 JD”。</p>}
-      <p>已读 {task.counts.pages_read || 0} / {task.request.max_pages} 批 · 本次唯一岗位 {task.counts.unique_jobs || 0} · 跨批重复引用 {task.counts.duplicate_observations || 0}</p>
+      <p>已读 {task.counts.pages_read || 0} / {task.counts.pages_requested || task.request.max_pages} 批 · 本次唯一岗位 {task.counts.unique_jobs || 0} · 跨批/组合重复引用 {task.counts.duplicate_observations || 0}</p>
+      {!!task.search_groups?.length && <details><summary>各检索组合结果（{task.search_groups.length}组已结束）</summary><ul>{task.search_groups.map(g=><li key={g.group_index}>第{g.group_index}组：{outcomes[g.outcome] || g.outcome} · {g.pages_read}批 · {g.message}</li>)}</ul></details>}
       <p>已读取 JD：{task.counts.jd_captured || 0} / {task.jobs.length} 个{task.phase === 'details' ? ` · 已处理 ${task.counts.detail_processed || 0} / ${task.counts.detail_total || task.jobs.length}` : ''}。未读取的不会用历史数据填充。</p>
       <p className="note">原因码：{task.reason_code || '等待结果'} · JobPilot任务：{task.id}</p>
       {task.state !== 'completed' && <button type="button" disabled={task.state === 'stopping'} onClick={() => void stop()}>停止本次读取</button>}

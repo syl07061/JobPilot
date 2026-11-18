@@ -1,5 +1,5 @@
 /* JobPilot 独立 DOM 快照：只读当前可见岗位区域，不返回 HTML、输入框或存储。 */
-(() => {
+((filtersOnly = false, filterState = {}) => {
   const visible = node => {
     if (!node || !node.getClientRects().length) return false;
     for (let p=node; p; p=p.parentElement) {
@@ -20,8 +20,10 @@
   const unique = values => [...new Set(values.filter(Boolean))];
   const one = values => { const u = unique(values); return u.length === 1 ? u[0] : null; };
   const url = new URL(location.href);
-  const contextKeys = ['query', 'city', 'salary', 'experience', 'degree', 'scale', 'industry', 'jobType', 'sortType'];
+  const contextKeys = ['query', 'city', 'salary', 'experience', 'degree', 'scale', 'industry', 'jobType', 'sortType', 'multiBusinessDistrict', 'multiSubway', 'areaBusiness'];
   const context = Object.fromEntries(contextKeys.filter(k => url.searchParams.has(k)).map(k => [k, url.searchParams.getAll(k)]));
+  const nativeFilters=filterState.available ? filterState.effective : null;
+  if(nativeFilters)context.native_filters=nativeFilters;
   const anchors = [...document.querySelectorAll('a[href]')].filter(visible);
   const jobLinks = anchors.filter(a => linkURL(a, 'job'));
   const dialogs = [...document.querySelectorAll('[role="dialog"], [class*="login-dialog"], [class*="login-modal"]')].filter(visible);
@@ -39,7 +41,11 @@
     restriction, explicit_empty: /暂无相关职位|暂无职位|没有找到相关职位|未找到符合条件的职位|暂无搜索结果/.test(resultText),
     explicit_end: /没有更多职位|没有更多了|已经到底了/.test(resultText), cards: [], truncated: false,
     viewport: {width: innerWidth, height: innerHeight}};
-  if (restriction) return page;
+  page.native_filters=nativeFilters;
+  page.native_filter_values=filterState.effective_values || {};
+  page.visibility_state=document.visibilityState;
+  page.has_focus=document.hasFocus();
+  if (restriction || filtersOnly) return page; // 筛选元数据检查不导出岗位字段或JD。
   // 只记录已加载的公开字体资源，不读取或保存认证参数。
   const salaryNode = [...document.querySelectorAll('.job-salary')].find(visible);
   page.salary_font = {family: salaryNode ? getComputedStyle(salaryNode).fontFamily : '',
@@ -53,13 +59,20 @@
   if (panels.length === 1) {
     const panel=panels[0], description=panel.querySelector('.job-detail-body > .desc');
     const detailURL=linkURL(panel.querySelector('.job-detail-body .more-job-btn') || {}, 'job');
+    // 真实页面已核验：地址正文与标题、地图分别位于独立子节点。
+    const addressRegions=[...panel.querySelectorAll('.job-detail-body .job-address')].filter(visible);
+    const addressRegionText=addressRegions.length===1 ? read(addressRegions[0]) : null;
+    const addressNodes=addressRegions.length===1 ? [...addressRegions[0].querySelectorAll('.job-address-desc')].filter(visible) : [];
+    const workAddress=addressNodes.length===1 ? read(addressNodes[0]) || null : null;
     Object.assign(page.detail_probe, {url: detailURL, title: read(panel.querySelector('.job-detail-header .job-name')) || null,
       description_chars: read(description).length});
     if (detailURL && read(description)) page.detail = {url: detailURL,
       title: read(panel.querySelector('.job-detail-header .job-name')) || null,
       active_job_urls: activeJobURLs,
       jd: read(description), tags: unique([...panel.querySelectorAll('.job-label-list > *')].map(read)),
-      source_selectors: {description: '.job-detail-body > .desc', identity: '.job-detail-body .more-job-btn'}};
+      work_address: workAddress, work_address_region_text: addressRegionText,
+      source_selectors: {description: '.job-detail-body > .desc', identity: '.job-detail-body .more-job-btn',
+        work_address: '.job-detail-body .job-address .job-address-desc'}};
   }
   const seen = new Set();
   for (const anchor of jobLinks) {
@@ -104,4 +117,4 @@
       fragments, links: [...card.querySelectorAll('a[href]')].filter(visible).map(a => ({text: read(a), url: linkURL(a,'job') || linkURL(a,'company')})).filter(a => a.url)}});
   }
   return page;
-})()
+})

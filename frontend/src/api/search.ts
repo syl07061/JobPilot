@@ -1,4 +1,4 @@
-import type { CollectorStatus, Preview, SearchRequest, SearchTask, ReadingBudget } from '../types/search'
+import type { CollectorStatus, Preview, SearchRequest, SearchTask, ReadingBudget, FilterOptions } from '../types/search'
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`/api/search${path}`, options)
@@ -10,6 +10,12 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 export const collectorStatus = () => request<CollectorStatus>('/collector-status')
+export const getFilterOptions = (refresh=false, city?:string) => {
+  const params=new URLSearchParams()
+  if(refresh)params.set('refresh','true')
+  if(city)params.set('city',city)
+  return request<FilterOptions>(`/filter-options?${params}`)
+}
 export const getBudget = () => request<ReadingBudget>('/budget')
 export const setDailyLimit = (daily_limit: number) => request<ReadingBudget>('/budget', {
   method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({daily_limit}),

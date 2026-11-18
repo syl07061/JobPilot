@@ -6,13 +6,14 @@
 
 ```mermaid
 flowchart TD
-    User[用户在Chrome手动搜索] --> Page[BOSS当前结果页]
-    UI[JobPilot：只输入max_pages] --> API[FastAPI /search/tasks]
+    User[用户在Chrome登录并设置关键词] --> Page[BOSS当前结果页]
+    UI[JobPilot：城市/行政区/类型/薪资/经验/每组批次] --> API[FastAPI /search/tasks]
     API --> Service[DirectSearchService]
     Service --> Collector[BrowserCollectorAdapter / DirectBossCollector]
     Collector --> Discovery[本机Chrome /json/list]
     Collector --> Socket[页面WebSocket：公开CDP]
-    Socket --> Page
+    Socket --> Apply[逐组原生搜索导航并核对选中编码集合]
+    Apply --> Page
     Service --> Files[JobPilot独立任务JSON]
     Collector --> Safety[JobPilot互斥及批次预算]
 ```
@@ -21,7 +22,9 @@ flowchart TD
 
 ## 最小能力边界
 
-- 仅一个用户参数max_pages（1–20）；关键词、城市、筛选条件来自用户已手动打开的结果页，不自动设置或导航。
+- 前端配置城市、行政区、求职类型、薪资待遇、经验和每组max_pages（1–20）。城市单选，其余复选；同维度OR、跨维度AND。经验和行政区原生多选；BOSS单选的薪资/类型按笛卡尔积串行执行，全部组合的计划批次不得超过20。关键词仍在BOSS手动设置；保留query，清除其他旧条件，逐组核对DOM选中编码集合后才读取。
+- 选项来自实际筛选DOM及不带认证的公开城市/行政区目录；区域核对城市归属并按城市缓存，切换城市清空前端旧区域。本轮不开放商圈、地铁。不复用BossHunter代码，无法识别或集合不一致即停止全部剩余组合。旧单值API兼容，不传filters仍读取当前条件。
+- 全任务持有同一互斥锁，绑定同一标签页串行导航；跨组按岗位URL合并，已读JD跳过，完整DOM快照保留组号。`search_groups`记录每组结果，页数累计实际批次；任一加载/平台/额度/停止异常中止后续，不自动重试。全部组明确无职位才返回整体no_results。
 - 读取搜索列表后，串行正常点击岗位卡片获取右侧JD。不创建详情标签，不点击沟通/投递/收藏；未打开或失败的描述不会声称已获取。
 - 不继承旧采集器的薪资、经验、匿名公司等预筛，也不按历史ID丢弃岗位。仅在本次任务内合并相同岗位链接。
 - 页面可能按滚动批次加载；只有新增URL出现才推进计数。未确认下一批则明确停止，不把相同DOM重复算页。
@@ -31,6 +34,8 @@ flowchart TD
 `ChromeDiscovery`只从127.0.0.1的Chrome `/json/list`选择一个BOSS搜索结果标签。没有或存在多个结果页时停止，不创建、关闭或切换标签页。返回的WebSocket地址还要核对同一主机/端口及页面协议路径，避免被调试元数据指向其他服务。
 
 `PageCDP`直接连接该页面WebSocket，按命令ID匹配响应；不使用Playwright、Patchright或BossHunter连接层，不启用自动附加、Runtime.enable或反检测脚本。使用Runtime.evaluate读取/定位、正常滚动及Input.dispatchMouseEvent单击安全的卡片空白区域。断开连接不关闭标签页或Chrome。
+
+自动JD点击前通过正常`Page.bringToFront`激活目标标签，等待实际可见及两帧绘制；滚动后再次等待绘制并重新定位。后台刚导航但未前台绘制的普通Chrome会出现协议命令已返回、DOM却未收到点击的情况，已在独立离线Chrome重复定位与修复。不模拟焦点或可见性；前端提示采集时保留BOSS前台，可在另一窗口查看JobPilot。详见[JD点击诊断](jd-click-diagnosis.md)。
 
 `snapshot.js`为自主编写的DOM表达式：从真实岗位详情链接寻找所属卡片容器，保留可见卡片文本、叶节点文本/类名、安全的岗位/公司链接及可确定字段。通过实际DOM的语义类名、公司链接和标签文本识别字段，歧义时保留null；既不从职位名称猜公司，也不从JD推断缺失数据。
 
@@ -44,7 +49,7 @@ flowchart TD
 
 列表采样时同时保存匹配的面板，列表完成后自动处理未读取JD：`detail_target.js`核对搜索条件、唯一卡片及列表标题，通过正常scrollIntoView移动卡片；elementFromPoint命中的位置必须位于卡片内，且不能是链接、按钮或其他交互控件，随后使用CDP鼠标事件点击。每个岗位只点击一次，轮询同一面板等待URL及选中卡片匹配、JD非空，超时即停止。失败快照保留预期URL、实际面板URL、两边标题、JD字符数及选中卡片证据，不记录凭证或整页正文。
 
-任务`phase=list/details/completed`独立于running/stopping/completed，详情阶段流式保存进度、逐岗位状态及原文。`POST .../auto-details`可在现有列表上补齐，跳过已有JD，不重新检索；状态GET不会自动启动任何点击。重启和页面变化不会自动恢复。原有refresh-current、单岗位detail仍为被动刷新接口。所有流程共用互斥和同一可配置每日预算，自动打开一个详情也计一次，不另设计数账本。
+任务`phase=filters/list/details/completed`独立于running/stopping/completed，`applied_filters`记录请求条件、实际页面回显和核验状态，详情阶段流式保存进度、逐岗位状态及原文。`POST .../auto-details`可在现有列表上补齐，跳过已有JD，不重新检索；状态GET不会自动启动任何点击。重启和页面变化不会自动恢复。原有refresh-current、单岗位detail仍为被动刷新接口。所有流程共用互斥和同一可配置每日预算，搜索加载和首批读取合计一次，自动打开一个详情也计一次，不另设计数账本。
 
 旧`local_api`样本仅用于历史对照。当前任务使用`data/direct_tasks`，不会读旧`data/search_tasks`的运行状态，也不会自动恢复旧BossHunter任务。
 
@@ -60,13 +65,14 @@ flowchart TD
 | no_results | 页面明确出现无职位提示 |
 | exhausted | 页面明确提示没有更多，提前完成 |
 | load_failed | 无法确认初始列表或下一批，不作为成功0条 |
+| filter_failed | 选项不支持、筛选控件无法识别或选中编码集合未匹配，不读取该组岗位，停止后续组合 |
 | platform_restricted | 登录/验证码/访问限制，立即停止 |
 | page_changed | about:blank、离开搜索页、公开检索条件变化 |
 | quota_exhausted | JobPilot自己的当日读取预算耗尽 |
 | source_unavailable / collector_error | 无唯一搜索页、连接/DOM等异常 |
 | stopped / unknown | 用户停止，或服务重启导致读取中断 |
 
-每批快照保留来源与缺失字段，失败也保留此前结果。只有显式POST才读取DOM/滚动；检查状态仅查询本机标签页元数据。重启后不会自动继续滚动。异步HTTP及WebSocket不阻塞事件循环。
+每批快照保留来源与缺失字段，失败也保留此前结果。只有显式POST任务才导航、读取岗位或滚动；检查状态只查询标签元数据。`GET /search/filter-options?city=...`只读筛选DOM与公开城市/行政区目录，按城市缓存，不点击、不导出岗位、不消耗额度；refresh=true强制更新。重启后不自动继续组合或滚动。异步HTTP及WebSocket不阻塞事件循环。
 
 JobPilot实例之间用本地文件锁互斥；同一Chrome上的其他程序不受此锁管理，因此用户应先停止其他采集任务。检测到搜索条件变化时停止以防混入其他结果，不声称能阻止外部程序操作Chrome。
 
@@ -77,6 +83,10 @@ JobPilot实例之间用本地文件锁互斥；同一Chrome上的其他程序不
 单次最多20批、低频等待、每批最多3次正常滚动及风险停止仍保留。失败尝试也计数。本地额度不是平台官方配额，与BossHunter账本独立，不修改其原记录。
 
 仅导出岗位区域，不导出整页HTML、输入值、存储或聊天文本。状态判断可在页面内检测可见登录/验证提示，页面完整正文不返回。URL去查询/片段，通用脱敏再次屏蔽凭证。前后端与调试端口限定本机，不为网站安全资源设置拦截规则。
+
+## 开发启动器
+
+开发启动器`start.bat → scripts/start_jobpilot.py`与采集任务分离：检查9222、后端端口和5173的服务身份，复用健康实例，端口被其他服务占用时停止启动而不杀进程。新启动的前后端为该启动器拥有，Ctrl+C仅终止这两个进程，保留Chrome和复用实例；后端一键模式不使用reload子进程，前端直接运行Node/Vite。缺少浏览器标签时只打开BOSS首页和本地工作台，不导航已有搜索页、不创建采集任务。日志在忽略的output/startup目录；check-only只读检查，no-open不打开标签。
 
 ## 后续方向
 

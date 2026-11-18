@@ -6,7 +6,13 @@ h1 { font-size: 2rem; margin: 8px 0; } h2 { font-size: 1.2rem; } h3 { font-size:
 .panel, .detail { padding: 24px; margin: 20px 0; border: 1px solid #dce3e9; background: #fff; border-radius: 10px; }
 .search-form { display: grid; grid-template-columns: minmax(180px, 300px) auto; gap: 16px; align-items: end; justify-content: start; }
 label { display: flex; flex-direction: column; gap: 6px; font-weight: 600; }
-input, button { font: inherit; padding: 9px 12px; border: 1px solid #b8c6d2; border-radius: 6px; background: #fff; color: inherit; }
+input, select, button { font: inherit; padding: 9px 12px; border: 1px solid #b8c6d2; border-radius: 6px; background: #fff; color: inherit; }
+.filter-form {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;align-items:end}
+.filter-choices {margin:0;min-width:0;padding:12px;border:1px solid #dce3e9;border-radius:6px;align-self:start}
+.filter-choices legend {font-weight:600} .choice-list {max-height:220px;overflow:auto;display:flex;flex-direction:column;gap:7px}
+.choice-list label {flex-direction:row;align-items:center;font-weight:400;gap:8px} .choice-list input {width:16px;height:16px;margin:0;flex-shrink:0}
+.filter-choices small {color:#596574;display:block;margin-top:10px}
+@media(max-width:800px){.filter-form{grid-template-columns:1fr 1fr}}
 button { cursor: pointer; } button:disabled { opacity: .5; cursor: not-allowed; } button:hover:not(:disabled) { border-color: #247284; }
 .card-text { white-space: pre-wrap; line-height: 1.8; }
 button.primary { background: #16576b; color: white; border-color: #16576b; }

@@ -1,7 +1,7 @@
 /* 只定位岗位卡片并正常滚动到可见位置；点击由 CDP 鼠标事件完成。 */
 (input => {
   const here=new URL(location.href);
-  const keys=['query','city','salary','experience','degree','scale','industry','jobType','sortType'];
+  const keys=['query','city','salary','experience','degree','scale','industry','jobType','sortType','multiBusinessDistrict','multiSubway','areaBusiness'];
   const context=Object.fromEntries(keys.filter(k=>here.searchParams.has(k)).map(k=>[k,here.searchParams.getAll(k)]));
   if (here.protocol!=='https:' || !/(^|\.)zhipin\.com$/.test(here.hostname) ||
       !['/web/geek/jobs','/web/geek/job'].includes(here.pathname.replace(/\/$/,'')) ||
@@ -22,7 +22,7 @@
     if(x<1||y<1||x>=innerWidth-1||y>=innerHeight-1)continue;
     const hit=document.elementFromPoint(x,y);
     if(hit && box.contains(hit) && !hit.closest('a,button,input,textarea,select,[role="button"],[contenteditable="true"]'))
-      return {status:'ready',x,y};
+      return {status:'ready',x,y,hit:{tag:hit.tagName,classes:[...hit.classList]}};
   }
   return {status:'no_safe_point'};
 })
