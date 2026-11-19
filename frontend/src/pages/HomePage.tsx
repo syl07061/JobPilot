@@ -3,6 +3,8 @@ import type { FormEvent } from 'react'
 import { collectorStatus, getPreview, getTask, startSearch, stopSearch, refreshCurrent, readJobDetail, startAutoDetails, getBudget, setDailyLimit, getFilterOptions } from '../api/search'
 import JobDetail from '../components/JobDetail'
 import FilterChoices from '../components/FilterChoices'
+import ModelSettings from '../components/ModelSettings'
+import ResumeUploads from '../components/ResumeUploads'
 import type { CollectorStatus, Preview, SearchTask, ReadingBudget, FilterOptions, NativeFilters } from '../types/search'
 
 const outcomes: Record<string, string> = {
@@ -15,6 +17,7 @@ const outcomes: Record<string, string> = {
 const states: Record<string, string> = { running: '读取中', stopping: '停止中', completed: '已结束' }
 
 export default function HomePage() {
+  const [tab,setTab]=useState<'config'|'filters'|'results'|'resumes'>('filters')
   const [pages, setPages] = useState(1)
   const [filterOptions, setFilterOptions] = useState<FilterOptions | null>(null)
   const [filters, setFilters] = useState<NativeFilters>({city:'',job_type:['0'],salary:['0'],experience:['0'],regions:[]})
@@ -134,6 +137,7 @@ export default function HomePage() {
       if(plannedBatches>20)throw new Error('每组批次×组合数不能超过20批，请缩小本次范围。')
       const value = await startSearch({ max_pages: pages, filters })
       setTask(value)
+      setTab('results')
       localStorage.setItem('jobpilot-direct-task-v1', value.id)
     } catch (err) { setError(err instanceof Error ? err.message : '启动失败，请检查专用 Chrome。') }
     finally { setSubmitting(false) }
@@ -169,6 +173,23 @@ export default function HomePage() {
   return <main>
     <header><p className="eyebrow">JobPilot · 独立读取</p><h1>BOSS 岗位原始信息</h1>
       <p>先在专用 Chrome 手动登录并搜索关键词。JobPilot按城市、行政区、求职类型、薪资和经验初筛，再读取岗位和 JD。</p></header>
+    <div className="workspace-tabs" role="tablist" aria-label="工作台栏目">
+      {([['config','配置'],['filters','筛选条件'],['results','采集结果'],['resumes','简历上传']] as const).map(([id,label],index)=><button key={id} id={`tab-${id}`} role="tab" tabIndex={tab===id ? 0 : -1} aria-selected={tab===id} aria-controls={`panel-${id}`} onClick={()=>setTab(id)} onKeyDown={event=>{
+        const ids=['config','filters','results','resumes'] as const
+        if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return
+        event.preventDefault()
+        const next=event.key==='Home' ? 0 : event.key==='End' ? ids.length-1 : (index+(event.key==='ArrowRight' ? 1 : ids.length-1))%ids.length
+        setTab(ids[next]);document.getElementById(`tab-${ids[next]}`)?.focus()
+      }}>{label}</button>)}
+    </div>
+    {task && <p className="workspace-status">任务状态：{states[task.state]} · 岗位 {task.jobs.length} · JD {task.counts.jd_captured || 0}
+      {tab!=='results' && <button type="button" className="link-button" onClick={()=>setTab('results')}>查看采集结果与进度</button>}</p>}
+    {error && (tab==='filters' || tab==='results') && <p role="alert" className="error">{error}</p>}
+    <div role="tabpanel" id="panel-resumes" aria-labelledby="tab-resumes" hidden={tab!=='resumes'}>
+      {tab==='resumes' && <ResumeUploads/>}
+    </div>
+    <div role="tabpanel" id="panel-config" aria-labelledby="tab-config" hidden={tab!=='config'}>
+    {tab==='config' && <ModelSettings/>}
     <section className="panel" aria-label="读取额度">
       <h2>每日读取额度</h2>
       {budget ? <p role="status">今日上限 {budget.daily_limit} 次 · 已用 {budget.used} 次 · <strong>剩余 {budget.remaining} 次</strong></p> : <p>{budgetLoading ? '正在读取今日额度…' : '剩余额度尚未确认，暂不能开始读取。'}</p>}
@@ -183,7 +204,10 @@ export default function HomePage() {
       {budgetError && <p role="alert" className="error">{budgetError}</p>}
       {budgetNotice && <p role="status">{budgetNotice}</p>}
     </section>
+    </div>
+    <div role="tabpanel" id="panel-filters" aria-labelledby="tab-filters" hidden={tab!=='filters'}>
     <section className="panel">
+      <h2>岗位初筛条件</h2>
       <form onSubmit={event => void submit(event)} className="filter-form">
         <label>工作城市<select aria-label="工作城市" required value={filters.city} disabled={busy} onChange={e=>setFilters({...filters,city:e.target.value,regions:[]})}>
           <option value="">请选择城市</option>{filterOptions?.cities.map(c=><option key={c.value} value={c.value}>{c.label}</option>)}</select></label>
@@ -202,7 +226,8 @@ export default function HomePage() {
       <p className="notice">自动读取JD时会将专用Chrome的BOSS标签页切到前台，并等待页面绘制。请勿切换该窗口的标签或最小化；可在另一个浏览器窗口查看JobPilot进度。</p>
       <p className="note">首次建议1页；任务期间请勿操作该结果页，也请停止其他程序对同一 Chrome 的控制。遇登录或安全验证立即停止，不绕过。</p>
     </section>
-    {error && <p role="alert" className="error">{error}</p>}
+    </div>
+    <div role="tabpanel" id="panel-results" aria-labelledby="tab-results" hidden={tab!=='results'}>
     {task && <section className="panel" aria-label="当前任务">
       <h2>{states[task.state]}{task.state === 'running' && task.phase === 'details' ? ' · 正在自动获取 JD' : ''}{task.outcome ? ` · ${task.outcome === 'collected' && (task.counts.jd_captured || 0) < task.jobs.length ? '列表读取完成，JD待补齐' : task.outcome === 'load_failed' && task.counts.detail_total ? 'JD 加载或匹配失败' : outcomes[task.outcome] || task.outcome}` : ''}</h2>
       <p>{task.message}</p><p className="note">本次请求：每组{task.request.max_pages}页/批次 · {task.source_page?.title || '等待读取页面'}</p>
@@ -231,5 +256,6 @@ export default function HomePage() {
           <strong>{String(job.fields.title || '岗位名称未提供')}</strong><span>{String(job.fields.company || '公司未提供')}</span>
           <span>{typeof job.fields.salary === 'string' && /[\uE000-\uF8FF]/.test(job.fields.salary) ? '薪资待刷新' : String(job.fields.salary || (job.fields.salary_raw ? '薪资字形未验证' : '薪资未提供'))} · {String(job.fields.location || job.fields.city || '地点未提供')}</span>
         </button></li>)}</ul></nav>{current && <JobDetail key={current.id} job={current} busy={busy || quotaBlocked} onReadJD={mode === 'task' ? () => void enrich(current.id) : undefined} />}</div>}
+    </div>
   </main>
 }

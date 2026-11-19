@@ -18,9 +18,14 @@ AI 复筛将结合**个人简历、用户求职偏好和完整岗位 JD**；目�
 | 城市、行政区及复选初筛、每组读取批次 | 已实现，真实点击验收待完成（WIP） | 原生多选与单选组合串行检索；逐组核验、结果去重，保留手动搜索关键词 |
 | 列表与JD、任务状态、停止、格式化详情、脱敏 JSON 与复制 | 已实现 | 本次DOM来源；不调用BossHunter，不用历史数据回填 |
 | 已保存真实岗位样本预览 | 已实现 | 显著标记为历史样本，不代表新检索成功 |
+| 配置 / 筛选条件 / 采集结果 / 简历上传标签页 | 已实现 | 切换保留条件与任务；额度和模型设置集中在配置 |
+| 手动模型 URL、模型名称及 API Key 配置 | 已实现 | 本机后端保存，Key不回显；保存配置本身不调用模型 |
+| PDF / Word 简历上传及版本列表 | 已实现 | 支持PDF、DOC、DOCX，同名保留版本、原件下载；上传操作本身不解析或调用AI |
+| 解析最新简历、唯一生效个人档案 | 已实现，真实DOCX验证通过 | 本地提取文字版PDF/DOCX后调用配置模型；成功才事务替换档案，失败保留旧档案；DOC需另存格式 |
+| 简历工作台分区展示 | 已实现 | 上传与解析、当前个人档案、历史版本独立卡片；桌面双栏、窄屏单栏 |
 | 学历、规模等其余 BOSS 原生筛选条件 | Planned | 当前开放城市、行政区、求职类型、薪资、经验；商圈和地铁暂未开放 |
 | JobPilot 岗位库、增量与去重 | Planned · Phase 2 | 当前只有本地任务快照及任务内链接去重 |
-| 简历、偏好、AI 复筛与多维评分 | Planned · Phase 3 | 尚未实现 |
+| 求职偏好、AI 复筛与多维评分 | Planned · Phase 3 | 简历解析已完成，尚未执行岗位AI复筛或评分 |
 | 推荐列表、评分解释和完整任务管理 | Planned · Phase 4 | 尚未实现 |
 
 ## 安装与启动
@@ -49,21 +54,35 @@ Copy-Item .env.example .env   # 仅首次创建；已有 .env 时保留现有配
 
 修改每日上限不清空已用量、不自动恢复任务。“开始读取”创建新任务；“自动补齐本次 JD”只补原任务中未取得的 JD，不重新执行尚未完成的检索组合。
 
+## 模型配置与简历解析
+
+1. 在「配置」中填写OpenAI兼容服务的Base URL、模型名称或模型ID及API Key。保存后在本机生效，Key不回传前端；保存配置不调用模型。
+2. 在「简历上传」的「上传与解析」卡片中上传文件（单个最大10MB）。上传只保存原件并新增版本，不自动解析。
+3. 点击「解析最新简历」，后端提取最新文字版PDF/DOCX内容并发送给所配置的模型，可能产生API费用；扫描件不支持，旧DOC需转换为DOCX或文字版PDF。
+4. 在「当前个人档案」查看结构化信息和来源版本，在「历史简历版本」下载原件。新解析成功才替换当前档案，失败保留旧档案，历史文件不会逐份重复解析。
+
+**当前档案是大模型整理后的信息，不是简历原文逐字展示。**模型可能精简工作、项目描述，请核对结果；完整保留经历原文、技术细节和量化成果的解析策略尚待完善。当前没有岗位匹配评分。
+
+本地存储：模型配置在`data/settings/model.json`（含未加密Key），简历原件在`data/resumes/files/`，上传版本、最近解析状态与唯一生效档案在`data/resumes/versions.db`。这些文件均不提交Git。简历解析只依赖已配置模型服务，不需要连接BOSS浏览器。
+
 ## 技术与验证
 
-当前使用 Python 3.11、FastAPI、Pydantic、原生 CDP/WebSocket，以及 React、TypeScript、Vite。SQLAlchemy / SQLite 岗位库和 OpenAI 兼容 API 模型适配属于后续阶段。
+当前使用 Python 3.11、FastAPI、Pydantic、原生 CDP/WebSocket，以及 React、TypeScript、Vite。SQLAlchemy / SQLite 已用于简历版本与唯一生效档案；岗位库及AI岗位复筛尚未实现。简历解析通过OpenAI兼容Chat API调用配置模型。
 
 ```powershell
 & D:\CondaEnvs\jobpilot\python.exe -m pytest backend\tests -q
 npm.cmd --prefix frontend run build
 ```
 
-本次验证：**112 项后端测试通过，TypeScript 检查和 Vite 构建通过**。离线浏览器回归覆盖原生筛选、多组合去重、JD 身份匹配及后台导航后的前台点击修复。真实任务已取得列表和部分 JD；最新前台同步修复后的真实平台复测尚待用户主动触发。测试通过不代表所有 BOSS 页面均可稳定采集。
+本次验证：**151 项后端测试通过，TypeScript 检查和 Vite 构建通过**。合成文件及模拟模型测试覆盖提取、最新版本、失败保留、并发上传防覆盖及档案展示；新版简历页面完成桌面及390px窄屏的模拟数据检查。2026-11-20，火山方舟真实最新DOCX解析及档案入库成功，用户也已确认上传与解析可用。文字版PDF提取通过合成文件测试，尚未进行真实PDF模型联调。尚未执行AI岗位复筛或评分。
 
 ## 文档
 
 - [架构与接口](docs/architecture.md)
 - [原生初筛、复选与额度语义](docs/native-prefilter.md)
+- [模型配置与工作台标签](docs/model-configuration.md)
+- [简历上传、版本与本地存储](docs/resume-upload.md)
+- [解析最新简历与唯一生效档案](docs/resume-parsing.md)
 - [岗位字段及数据来源分析](docs/boss-data-analysis.md)
 - [后台点击导致 JD 未切换的诊断](docs/jd-click-diagnosis.md)
 - [MVP Roadmap](docs/roadmap.md)

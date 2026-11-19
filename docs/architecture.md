@@ -22,6 +22,8 @@ flowchart TD
 
 ## 最小能力边界
 
+工作台使用配置、筛选条件、采集结果三个标签，状态和轮询仍由共同父组件持有。模型配置使用独立`/settings/model`接口及`ModelSettingsStore`，写入Git忽略的`data/settings/model.json`；未设置本地文件时回退环境变量。响应仅包含Key是否已设置，不回传Key，验证失败也不回显请求input；本轮不连接模型。详见[模型配置说明](model-configuration.md)。
+
 - 前端配置城市、行政区、求职类型、薪资待遇、经验和每组max_pages（1–20）。城市单选，其余复选；同维度OR、跨维度AND。经验和行政区原生多选；BOSS单选的薪资/类型按笛卡尔积串行执行，全部组合的计划批次不得超过20。关键词仍在BOSS手动设置；保留query，清除其他旧条件，逐组核对DOM选中编码集合后才读取。
 - 选项来自实际筛选DOM及不带认证的公开城市/行政区目录；区域核对城市归属并按城市缓存，切换城市清空前端旧区域。本轮不开放商圈、地铁。不复用BossHunter代码，无法识别或集合不一致即停止全部剩余组合。旧单值API兼容，不传filters仍读取当前条件。
 - 全任务持有同一互斥锁，绑定同一标签页串行导航；跨组按岗位URL合并，已读JD跳过，完整DOM快照保留组号。`search_groups`记录每组结果，页数累计实际批次；任一加载/平台/额度/停止异常中止后续，不自动重试。全部组明确无职位才返回整体no_results。
@@ -40,6 +42,10 @@ flowchart TD
 `snapshot.js`为自主编写的DOM表达式：从真实岗位详情链接寻找所属卡片容器，保留可见卡片文本、叶节点文本/类名、安全的岗位/公司链接及可确定字段。通过实际DOM的语义类名、公司链接和标签文本识别字段，歧义时保留null；既不从职位名称猜公司，也不从JD推断缺失数据。
 
 ## 数据层级
+
+`ResumeParser`在最新简历上执行本地文本提取和模型JSON提取。`current_resume_profile`仅一行生效档案，`latest_resume_parse_attempt`仅保存最近任务状态；均沿用简历SQLite库。发布结果时用写事务重新确认最新文件ID，防止解析期间的新上传被旧结果覆盖；失败不替换档案。实际文字和Key不进入普通日志，状态GET不调用模型。模型请求仅来自明确的解析POST，90秒超时、无重试。2026-11-20已完成一次真实最新DOCX解析，并成功写入当前档案。
+
+简历上传是独立的本机存储模块：原件位于`data/resumes/files`，版本元数据位于`data/resumes/versions.db`，由SQLAlchemy维护，未接入岗位库。前端第四个标签通过`/resumes`上传、列出版本并下载；不解析简历正文或发送给模型。模型设置文件保持不变。详见[简历上传说明](resume-upload.md)。
 
 新`RawSnapshot.source_layer=search_list_dom`：结构由JobPilot定义，值来自列表DOM。包含card_text、fragments、links、observed_fields、批次及来源说明，**不是BOSS内部API原始JSON**。列表原文不等于JD。
 
