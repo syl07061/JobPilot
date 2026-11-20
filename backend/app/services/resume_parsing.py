@@ -115,6 +115,13 @@ async def call_model(settings,document):
             '不要输出markdown、思考过程或额外字段。education的organization是学校、title是专业及学历；'
             'work_experience的organization是公司、title是职务；projects的title是项目名。结构必须符合以下schema：'
             +json.dumps(Profile.model_json_schema(),ensure_ascii=False))
+    profile = await call_json_model(settings, system, document, Profile)
+    if not (any(s.strip() for s in profile.skills) or any(i.organization or i.title or i.description for seq in (profile.education,profile.work_experience,profile.projects) for i in seq)):
+        raise ParseError('model_invalid_output','模型未返回有效的个人档案，旧档案保持不变。')
+    return profile
+
+
+async def call_json_model(settings, system, document, schema):
     payload={'model':settings['model'],'messages':[{'role':'system','content':system},{'role':'user','content':document}],
              'response_format':{'type':'json_object'},'max_tokens':4096}
     if (urlsplit(settings['base_url']).hostname or '').endswith('.volces.com'):
@@ -151,10 +158,7 @@ async def call_model(settings,document):
         if choice.get('finish_reason')!='stop':raise ValueError('incomplete')
         content=choice['message']['content']
         if not isinstance(content,str):raise ValueError('content')
-        profile=Profile.model_validate_json(content)
-        useful=bool(any(s.strip() for s in profile.skills) or any(i.organization or i.title or i.description for seq in (profile.education,profile.work_experience,profile.projects) for i in seq))
-        if not useful:raise ValueError('empty profile')
-        return profile
+        return schema.model_validate_json(content)
     except ParseError:raise
     except httpx.TimeoutException:raise ParseError('model_timeout','模型请求超时，未自动重试，旧档案保持不变。') from None
     except httpx.HTTPError:raise ParseError('model_network_error','模型网络访问失败，未自动重试，旧档案保持不变。') from None

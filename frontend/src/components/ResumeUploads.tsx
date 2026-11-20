@@ -10,6 +10,7 @@ export default function ResumeUploads(){
   const [loading,setLoading]=useState(true),[uploading,setUploading]=useState(false)
   const [error,setError]=useState(''),[notice,setNotice]=useState(''),[inputKey,setInputKey]=useState(0)
   const [profile,setProfile]=useState<ProfileState|null>(null),[parsing,setParsing]=useState(false)
+  const [dragging,setDragging]=useState(false)
   async function loadProfile(){
     const response=await fetch('/api/resumes/profile')
     if(!response.ok)throw new Error('无法读取个人档案状态')
@@ -71,7 +72,14 @@ export default function ResumeUploads(){
         <form onSubmit={event=>void upload(event)} className="resume-action-block">
           <div className="resume-step-heading"><span className="resume-step-number">1</span><h4>上传简历文件</h4></div>
           <p className="note">每次上传新增一个版本，同名文件也会保留。</p>
-          <label className="resume-file-picker">选择简历文件<input key={inputKey} type="file" accept=".pdf,.doc,.docx" disabled={uploading} onChange={event=>setFile(event.target.files?.[0] || null)}/></label>
+          <label className="resume-file-picker" data-dragging={dragging}
+            onDragOver={event=>{event.preventDefault();if(!uploading)setDragging(true)}}
+            onDragLeave={event=>{if(!event.currentTarget.contains(event.relatedTarget as Node | null))setDragging(false)}}
+            onDrop={event=>{event.preventDefault();setDragging(false);if(!uploading && event.dataTransfer.files[0])setFile(event.dataTransfer.files[0])}}>
+            <strong>拖放简历，或点击选择文件</strong><span>PDF / DOC / DOCX · 最大 10 MB</span>
+            <input key={inputKey} type="file" aria-label="选择简历文件" accept=".pdf,.doc,.docx" disabled={uploading} onChange={event=>setFile(event.target.files?.[0] || null)}/>
+          </label>
+          {file && <p className="selected-file" role="status"><strong>{file.name}</strong> · {(file.size/1024).toFixed(1)} KB</p>}
           <button className="primary" disabled={!file || uploading}>{uploading ? '正在上传…' : '上传简历'}</button>
         </form>
         <div className="resume-action-block">
